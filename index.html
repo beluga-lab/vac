@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Temperature & Humidity Chart</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: Arial, sans-serif; 
+      text-align: center; 
+      padding: 20px; 
+      background-color: #f8f9fa;
+    }
+    .chart-container {
+      width: 100%;
+      max-width: 1200px;
+      height: 80vh;
+      margin: 20px auto;
+    }
+    .control-panel { margin: 20px 0; }
+    button {
+      padding: 10px 20px;
+      margin: 0 10px;
+      border: none;
+      border-radius: 5px;
+      background: #0088cc;
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button:hover { background: #006699; }
+    h2 {
+      color: #333;
+      margin-bottom: 10px;
+      font-size: 2rem;
+    }
+    .data-count { color: #666; font-size: 1.2rem; margin-bottom: 15px; }
+  </style>
+</head>
+<body>
+  <h2>ESP32 Real-Time Temperature & Humidity</h2>
+  <div class="data-count">Current Data Points: <span id="pointCount">0</span> (Max: 10000)</div>
+  <div class="control-panel">
+    <button onclick="changePoints(3000)">3000 Points</button>
+    <button onclick="changePoints(6000)">6000 Points</button>
+    <button onclick="changePoints(10000)">10000 Points</button>
+  </div>
+  <div class="chart-container">
+    <canvas id="sensorChart"></canvas>
+  </div>
+
+  <script>
+    const channelID = 3231598; // Your Channel ID
+    const readAPIKey = "NG5C6S8JXNCBYN0S"; // Replace with your Read API Key
+    let maxPoints = 6000; // Default 6000 points
+    const fetchInterval = 30000; // Refresh every 30 seconds (reduce frequency for more points)
+
+    // Initialize chart with performance optimization
+    const ctx = document.getElementById('sensorChart').getContext('2d');
+    const sensorChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Temperature (°C)',
+            data: [],
+            borderColor: '#ff5733',
+            backgroundColor: 'rgba(255,87,51,0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0.5, // Reduce point size for performance
+            pointHoverRadius: 2
+          },
+          {
+            label: 'Humidity (%)',
+            data: [],
+            borderColor: '#3375ff',
+            backgroundColor: 'rgba(51,117,255,0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0.5,
+            pointHoverRadius: 2
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 0 }, // Disable animation for large data
+        elements: { line: { tension: 0.1 } },
+        scales: {
+          y: { 
+            beginAtZero: false, 
+            title: { display: true, text: 'Value', font: { size: 16, weight: 'bold' } },
+            ticks: { font: { size: 14 }, maxTicksLimit: 8 } // Reduce ticks
+          },
+          x: { 
+            title: { display: true, text: 'Time (Last N points)', font: { size: 16, weight: 'bold' } },
+            ticks: { font: { size: 12 }, maxTicksLimit: 12 }, // Reduce x-axis ticks
+            grid: { display: false } // Hide x-grid for clarity
+          }
+        },
+        plugins: {
+          legend: { labels: { font: { size: 16 } } },
+          tooltip: { mode: 'index', intersect: false }
+        },
+        interaction: { mode: 'nearest', axis: 'x', intersect: false }
+      }
+    });
+
+    // Change data point count
+    function changePoints(count) {
+      maxPoints = count;
+      document.getElementById('pointCount').textContent = count;
+      fetchData(); // Refresh data immediately
+    }
+
+    // Fetch data with ThingSpeak API pagination (supports up to 10000 points)
+    async function fetchData() {
+      try {
+        const batchSize = 8000; // ThingSpeak max per request (adjust if needed)
+        let allTemps = [];
+        let allHumis = [];
+        let allLabels = [];
+
+        // Calculate how many batches to fetch (for >8000 points)
+        const batches = Math.ceil(maxPoints / batchSize);
+        for (let i = 0; i < batches; i++) {
+          const fetchCount = i === batches - 1 ? maxPoints % batchSize || batchSize : batchSize;
+          
+          // Fetch Temperature (Field 1)
+          const tempResp = await fetch(`https://api.thingspeak.com/channels/${channelID}/fields/1.json?api_key=${readAPIKey}&results=${fetchCount}&offset=${i * batchSize}`);
+          const tempData = await tempResp.json();
+          
+          // Fetch Humidity (Field 2)
+          const humiResp = await fetch(`https://api.thingspeak.com/channels/${channelID}/fields/2.json?api_key=${readAPIKey}&results=${fetchCount}&offset=${i * batchSize}`);
+          const humiData = await humiResp.json();
+
+          // Parse and accumulate data
+          const batchLabels = tempData.feeds.map(f => f.created_at.split('T')[1].split('Z')[0]);
+          const batchTemps = tempData.feeds.map(f => parseFloat(f.field1) || 0);
+          const batchHumis = humiData.feeds.map(f => parseFloat(f.field2) || 0);
+
+          allLabels = [...allLabels, ...batchLabels];
+          allTemps = [...allTemps, ...batchTemps];
+          allHumis = [...allHumis, ...batchHumis];
+        }
+
+        // Trim to maxPoints (in case of over-fetch)
+        allLabels = allLabels.slice(0, maxPoints);
+        allTemps = allTemps.slice(0, maxPoints);
+        allHumis = allHumis.slice(0, maxPoints);
+
+        // Update chart data
+        sensorChart.data.labels = allLabels;
+        sensorChart.data.datasets[0].data = allTemps;
+        sensorChart.data.datasets[1].data = allHumis;
+        sensorChart.options.scales.x.title.text = `Time (Last ${maxPoints} points)`;
+        sensorChart.update('none'); // No animation for speed
+
+        // Update point count display
+        document.getElementById('pointCount').textContent = allTemps.length;
+
+      } catch (error) {
+        console.error("Failed to fetch data:", error);
+      }
+    }
+
+    // Initial fetch + auto refresh
+    fetchData();
+    setInterval(fetchData, fetchInterval);
+  </script>
+</body>
+</html>
